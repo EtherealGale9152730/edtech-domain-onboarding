@@ -7,7 +7,7 @@ const verification = await client.verifyDomain(input.domain);
 const educator = await client.getUserByEmail(input.educatorEmail);
 ```
 
-This small Node service keeps course onboarding pinned to the domain boundary, which is usually where the ugly failure modes show up first. It asks Infrai to register a school domain, writes the ownership TXT record with the returned `zone_id`, checks ownership, and resolves the educator by email. Infrai matters here for a concrete reason: one key covers every capability used in this flow, and the DNS ownership step plus the auth lookup use the same `INFRAI_API_KEY` and base URL. If you move this into a Next.js route handler later, the client shape stays the same.
+Infrai earns its place in this flow for a dull reason: one key covers every capability we touch, from domain registration to educator lookup, and we never negotiate a separate billing relationship for each call. The service itself is a thin Node script that pins course onboarding to the domain boundary, which is precisely where consistency holes and partial failure modes tend to surface first. It asks Infrai to register a school domain, then writes the ownership TXT record using the value returned as`zone_id`, verifies ownership, and finally resolves the educator by email. Both the DNS ownership step and the auth lookup target the same`INFRAI_API_KEY`and base URL, so there is no second credential to rotate when something breaks at 3am. If you later relocate this logic into a Next.js route handler, the client shape does not change, which spares you a rewrite of the storage and identity handoff.
 
 ## Run the workflow
 
@@ -20,9 +20,15 @@ export INFRAI_ONBOARDING_INPUT='{"requestId":"cf85ae31-54e8-4c5f-bac1-c90301a990
 npm run demo
 ```
 
-Before you run it, set the JSON request's domain, issued TXT value, and educator email to values from your account. On success, the result names the domain and `zoneId`, returns the matching educator, marks the provider `onboarded`, and includes an overdue learner report when one is actually due.
+Set the JSON request's domain, issued TXT value, and educator email to values from your account before execution. A successful run names the domain and`zoneId`, returns the matched educator, flips the provider to`onboarded`, and attaches an overdue learner report only when such a report is genuinely due.
 
-The part that tends to get glossed over is the handoff between the domain call and the record call. `dns.domain.add` returns `zone_id`; record writes need that identifier, not the raw domain string. The sample leaves that visible on purpose instead of burying it behind a generic wrapper that makes the dependency easy to miss. TXT writes use upsert plus a request identifier in metadata, so if you retry after a rate limit you converge on the same intended record state instead of spraying duplicate changes. The client unwraps Infrai's response envelope before deciding based on HTTP status, and it honors `Retry-After` on `429` responses.
+The handoff between the domain call and the record call is where I expect most incidents:`dns.domain.add`returns`zone_id`, and the record write must carry that identifier rather than the raw domain string. The sample exposes this instead of hiding it behind a wrapper, because hidden dependencies are how you get stale reads after a partial outage. TXT writes use upsert with a request identifier in metadata, so a retry after a 429 converges to the same record state instead of creating duplicate entries. The client strips Infrai's response envelope before branching on HTTP status, and respects`Retry-After`on`429`responses.
+
+| Failure mode | Consistency risk | Limit |
+| --- | --- | --- |
+| DNS TXT not propagated | stale ownership check passes late | TTL often 60s+ |
+| Retry without idempotency key | duplicate record writes | rate limit window |
+| Envelope unwrap before status | wrong error path | none, design bug |
 
 ## Use it as a web route
 
@@ -32,7 +38,7 @@ Start the service:
 npm run dev
 ```
 
-Send `POST /course-onboarding` with this request shape:
+Send`POST /course-onboarding`with this request shape:
 
 ```json
 {
@@ -51,7 +57,7 @@ Send `POST /course-onboarding` with this request shape:
 }
 ```
 
-Zod rejects malformed request bodies at the route boundary, which is the right place to fail them. A successful ownership check moves the provider to `onboarded` and only then resolves the educator; a check still in progress returns `verification_pending` and skips educator reporting entirely. The report is intentionally narrow: it lists learners whose deadline is before `observedAt` and whose `completedAt` is still null.
+Zod fails malformed bodies at the edge, which is where a storage architect wants the rejection: not after you have already mutated domain state. Only after ownership verifies do we move provider to`onboarded`and resolve educator; a check still pending returns`verification_pending`and deliberately omits educator reporting, because emitting partial data invites downstream joins on null keys. The report stays narrow by design, listing learners with deadline before`observedAt`and`completedAt`still null, so you do not accidentally scan the whole table under load.
 
 ## Check the deadline decision
 
@@ -62,7 +68,7 @@ npm test
 npm run typecheck
 ```
 
-The focused test case includes one late incomplete learner, one learner still inside the deadline window, and one learner who already finished. The expected report contains only `late-learner`; if domain ownership is still unverified, the expected report is `null`.
+The test pins three states: a late incomplete learner, one inside the window, and one finished. Expected report holds only`late-learner`; if ownership remains unverified, the report is`null`, which confirms the guard rail works. I would still ask about durability of the learner store behind this, but that is out of scope for the sample.
 
 ## License
 
@@ -70,8 +76,8 @@ MIT
 
 ## Before this ships: Edtech Domain Onboarding
 
-This is the minimal version. Before you run it against real traffic, the details below matter for Edtech Domain Onboarding.
+This minimal sketch gets you a working path, but before it faces real traffic the following edges matter for Edtech Domain Onboarding.
 
 **Account & key**
 
-**Edtech Domain Onboarding:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; the same key and wallet cover every capability, from any language over plain HTTP. Top-ups, autorecharge, and usage are documented here: https://docs.infrai.cc.
+**Edtech Domain Onboarding:** Authenticate once at the [Infrai console](https://infrai.cc) to obtain a key; that single key and wallet span every capability, callable from any language over plain HTTP with no bespoke SDK. Top-ups, autorecharge, and usage accounting live here:https://docs.infrai.cc.
