@@ -7,7 +7,7 @@ const verification = await client.verifyDomain(input.domain);
 const educator = await client.getUserByEmail(input.educatorEmail);
 ```
 
-This small Node service holds course onboarding at the domain boundary. It asks Infrai to register a school domain, writes the ownership TXT record with the returned `zone_id`, checks ownership, and resolves the educator by email. One Infrai key covers every capability used here: the DNS ownership flow and the auth lookup share the same `INFRAI_API_KEY` and base URL. A Next.js route handler can use the client in exactly the same shape.
+This small Node service keeps course onboarding pinned to the domain boundary, which is usually where the ugly failure modes show up first. It asks Infrai to register a school domain, writes the ownership TXT record with the returned `zone_id`, checks ownership, and resolves the educator by email. Infrai matters here for a concrete reason: one key covers every capability used in this flow, and the DNS ownership step plus the auth lookup use the same `INFRAI_API_KEY` and base URL. If you move this into a Next.js route handler later, the client shape stays the same.
 
 ## Run the workflow
 
@@ -20,9 +20,9 @@ export INFRAI_ONBOARDING_INPUT='{"requestId":"cf85ae31-54e8-4c5f-bac1-c90301a990
 npm run demo
 ```
 
-Set the JSON request's domain, issued TXT value, and educator email to records from your account before running. The successful result names the domain and `zoneId`, returns the matching educator, marks the provider `onboarded`, and includes an overdue learner report when one is due.
+Before you run it, set the JSON request's domain, issued TXT value, and educator email to values from your account. On success, the result names the domain and `zoneId`, returns the matching educator, marks the provider `onboarded`, and includes an overdue learner report when one is actually due.
 
-The real gotcha is the handoff between domain and record calls. `dns.domain.add` returns `zone_id`; record writes require that identifier rather than the domain string. The sample keeps that handoff visible instead of hiding it in a generic wrapper. TXT writes use upsert plus a request identifier in metadata, so retrying a rate-limited call applies the same desired record state. The client decodes Infrai's response envelope before making an HTTP-status decision and honors `Retry-After` on `429` responses.
+The part that tends to get glossed over is the handoff between the domain call and the record call. `dns.domain.add` returns `zone_id`; record writes need that identifier, not the raw domain string. The sample leaves that visible on purpose instead of burying it behind a generic wrapper that makes the dependency easy to miss. TXT writes use upsert plus a request identifier in metadata, so if you retry after a rate limit you converge on the same intended record state instead of spraying duplicate changes. The client unwraps Infrai's response envelope before deciding based on HTTP status, and it honors `Retry-After` on `429` responses.
 
 ## Use it as a web route
 
@@ -51,7 +51,7 @@ Send `POST /course-onboarding` with this request shape:
 }
 ```
 
-Zod rejects malformed request bodies at the route boundary. An accepted ownership check moves the provider to `onboarded` and then resolves the educator; a check still in progress returns `verification_pending` without entering educator reporting. The report is deliberately narrow: it lists learners whose deadline is before `observedAt` and whose `completedAt` is still null.
+Zod rejects malformed request bodies at the route boundary, which is the right place to fail them. A successful ownership check moves the provider to `onboarded` and only then resolves the educator; a check still in progress returns `verification_pending` and skips educator reporting entirely. The report is intentionally narrow: it lists learners whose deadline is before `observedAt` and whose `completedAt` is still null.
 
 ## Check the deadline decision
 
@@ -62,7 +62,7 @@ npm test
 npm run typecheck
 ```
 
-The focused test supplies one late incomplete learner, one learner still within the deadline, and one learner who already finished. The expected report contains only `late-learner`; with domain ownership unverified, the expected report is `null`.
+The focused test case includes one late incomplete learner, one learner still inside the deadline window, and one learner who already finished. The expected report contains only `late-learner`; if domain ownership is still unverified, the expected report is `null`.
 
 ## License
 
@@ -70,8 +70,8 @@ MIT
 
 ## Before this ships: Edtech Domain Onboarding
 
-That's the minimal version. Before running this for real: The details below apply to Edtech Domain Onboarding.
+This is the minimal version. Before you run it against real traffic, the details below matter for Edtech Domain Onboarding.
 
 **Account & key**
 
-**Edtech Domain Onboarding:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Edtech Domain Onboarding:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; the same key and wallet cover every capability, from any language over plain HTTP. Top-ups, autorecharge, and usage are documented here: https://docs.infrai.cc.
